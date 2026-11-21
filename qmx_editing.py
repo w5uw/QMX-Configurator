@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from PySide6.QtWidgets import QInputDialog, QMessageBox, QFileDialog
 
-APP_VERSION = "0.2.1"
+APP_VERSION = "0.2.3"
 
 # v0.2.1: settings inside System config -> CAT config that may be edited.
 # Names are compared after lower-casing and removing everything except a-z/0-9,
@@ -25,6 +25,22 @@ def cat_config_item(node):
     parts = node.get("path_names", "").split("|")
     if len(parts) >= 2 and _norm(parts[-2]) == "catconfig":
         return _norm(parts[-1])
+    return None
+
+PROTECTION_EDITABLE = {
+    "swrprotection", "swrthreshold", "protectionreset", "swrtimeout",
+    "swrwarnstyle", "tune", "gpsprotection", "supplyvoltage",
+    "minvoltage", "maxvoltage",
+}
+
+def in_virtual_u3s(node):
+    return any(_norm(part) == "virtualu3s"
+               for part in node.get("path_names", "").split("|"))
+
+def protection_item(node):
+    parts = node.get("path_names", "").split("|")
+    if len(parts) == 2 and _norm(parts[0]) == "protection":
+        return _norm(parts[1])
     return None
 
 def make_window(Base):
@@ -75,6 +91,12 @@ def make_window(Base):
             parts = node.get("path_names", "").split("|")
             if any(qp.is_dangerous(x) for x in parts):
                 return True
+            # Explicit dangerous paths above remain locked.
+            item = protection_item(node)
+            if item is not None:
+                return item not in PROTECTION_EDITABLE
+            if in_virtual_u3s(node):
+                return False
             # v0.2.1: CAT config is no longer locked as a whole; only the
             # reviewed items in CAT_CONFIG_EDITABLE may be edited.
             item = cat_config_item(node)
@@ -88,7 +110,7 @@ def make_window(Base):
         def validate(self, node, value):
             t, limit = node.get("type"), node.get("param", 0)
             if self.locked(node) or t not in (2, 3, 4, 5):
-                raise ValueError("This setting remains locked in the first write-capable release.")
+                raise ValueError("This setting is locked or its field type is not supported for editing.")
             if any(ord(c) < 32 or ord(c) > 126 or c in ";=|?[]" for c in value):
                 raise ValueError("Only printable ASCII without CAT delimiters is supported.")
             if t == 2 and (not isinstance(limit, int) or limit < 1 or len(value) > limit):
@@ -170,6 +192,33 @@ def make_window(Base):
 
         def confirm_special(self, node, value):
             """Extra explanation/confirmation for CAT config items. Returns True to stage."""
+            if protection_item(node) is not None:
+                return QMessageBox.warning(
+                    self, "Stage Protection setting?",
+                    "Protection settings control safeguards for the radio. "
+                    "Disabling protection or changing thresholds can reduce those "
+                    "safeguards and may expose the radio to damage.\n\n"
+                    f"Setting: {node['path_names']}\nNew value: {value}\n\n"
+                    "Numeric validation checks the CAT field format, not whether "
+                    "the value is electrically safe for your hardware. Changes "
+                    "may take effect immediately when applied.\n\n"
+                    "Stage this change?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No) == QMessageBox.Yes
+            if in_virtual_u3s(node):
+                return QMessageBox.warning(
+                    self, "Stage Virtual U3S setting?",
+                    "Virtual U3S settings can control automatic beacon or scheduled "
+                    "transmissions. Applying an enable, mode, frequency, power or "
+                    "schedule change may affect transmission immediately or when "
+                    "the radio activates the saved settings.\n\n"
+                    "This editor does not execute menu actions or send a separate "
+                    "transmit command, but configuration changes are not a guarantee "
+                    "that the radio will remain in receive.\n\n"
+                    "Confirm the radio is prepared for the resulting operation. "
+                    "Stage this change?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No) == QMessageBox.Yes
             item = cat_config_item(node)
             if item == "timeout" and _norm(value) in OFF_WORDS:
                 return QMessageBox.warning(
