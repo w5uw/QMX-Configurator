@@ -22,3 +22,12 @@ Enjoy
 
 - Number read-back is compared by value, so a setting the radio returns with
   leading zeros (Virtual U3S > Set time reads "0020") no longer stops Apply.
+
+## Changes in v0.2.6
+
+- Set time (Virtual U3S and System config) is treated as the radio's running
+  clock: entered as HHMM (0000-2359), not blocked by the "changed since read"
+  check, and read-back allows the clock to tick by one minute.
+- If an Apply stops, the staged settings are re-read from the radio and the
+  table refreshed, so editing can continue without a full Read all settings.
+- The "changed since read" message now names the setting and both values.
