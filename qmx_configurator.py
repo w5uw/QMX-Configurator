@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-QMX+ Configurator - version 0.1 (read-only browser)
+QMX+ Configurator - version 0.2.4 (staged read/write editing)
 
 Browse every QMX/QMX+ configuration setting without PuTTY.
 * Connect to the radio's USB COM port and read the full menu (CAT Menu Manager).
 * Or open a saved snapshot (.json) with no radio connected.
 * Search all settings, view band/schedule tables as grids, save snapshots.
 
-This version NEVER changes radio settings and never transmits.
+Edits are staged and only written after Review / Apply; no transmit commands are sent.
 
 Run on Windows 10:
     py -m pip install -r requirements.txt
@@ -32,13 +32,14 @@ from PySide6.QtWidgets import (
 import qmx_protocol as qp
 
 APP_NAME = "QMX+ Configurator"
-APP_VERSION = "0.2 (staged editing)"
+APP_VERSION = "0.2.4"
 TESTED_FIRMWARE = "1_04_010"
 NODE_ROLE = Qt.UserRole + 1
 
 DANGER_FG = QColor("#b3261e")
 MUTED_FG = QColor("#7a7a7a")
 SUBMENU_FG = QColor("#1f5fa8")
+PENDING_FG = QColor("#b35c00")
 
 
 # --------------------------------------------------------------------------- worker
@@ -84,10 +85,11 @@ def leaf_details(node: dict, lists: dict, inferred: dict | None = None) -> str:
         return txt if len(txt) <= 70 else txt[:67] + "..."
     if t == 2:
         return f"Text, up to {p} characters"
-    if t == 3:
-        return f"Number, up to {p} digits"
-    if t == 4:
-        return "Number 0 to 255"
+    if t in (3, 4):
+        rng = qp.value_range(node)
+        if rng is None:
+            return "Number (digit limit not reported)"
+        return f"Number {rng[0]} to {rng[1]} ({p} digit{'s' if p != 1 else ''})"
     if t == 6:
         return "Information only"
     if t == 8:
@@ -397,6 +399,15 @@ class MainWindow(QMainWindow):
         node, danger = cur.data(0, NODE_ROLE)
         self.show_section(node, danger)
 
+    def refresh_view(self):
+        """Redraw the table that is currently shown (section or search results)."""
+        if self.search.text().strip():
+            self.on_search(self.search.text())
+        else:
+            cur = self.tree.currentItem()
+            if cur:
+                self.on_tree_select(cur, None)
+
     def show_section(self, node, danger):
         self.lbl_section.setText(node["path_names"].replace("|", "  >  "))
         if danger:
@@ -454,9 +465,17 @@ class MainWindow(QMainWindow):
                     val_item = self._item("-", MUTED_FG)
                 else:
                     raw = n.get("value")
-                    val_item = self._item(fmt_value(n, raw),
-                                          MUTED_FG if raw in (None, "") else None,
-                                          bold=raw not in (None, ""))
+                    pend = self.pending_value(n.get("path_index"))
+                    if pend is not None:
+                        val_item = self._item(fmt_value(n, pend) + "   (pending)", PENDING_FG,
+                                              bold=True,
+                                              tip=f"Staged, not yet written: {pend!r}\n"
+                                                  f"Last read from radio: {raw!r}")
+                    else:
+                        shown = fmt_value(n, raw)
+                        val_item = self._item(shown,
+                                              MUTED_FG if raw in (None, "") else None,
+                                              bold=raw not in (None, ""), tip=shown)
                 self.table.setItem(r, c + 1, val_item)
                 self.table.setItem(r, c + 2, self._item(qp.TYPE_NAMES.get(t, str(t)), MUTED_FG))
                 det = leaf_details(n, self.lists, self.inferred)
@@ -470,10 +489,22 @@ class MainWindow(QMainWindow):
                                  f"'{self.inferred[lt]}' was filled in from the current value.")
                 self.table.setItem(r, c + 3, self._item(det, MUTED_FG, tip=full or det))
             self.table.item(r, c).setData(NODE_ROLE, (n, row_danger))
+        self._size_columns(len(headers))
+
+    def _size_columns(self, count):
+        """Fit columns to their contents once, then let the user drag them wider or narrower."""
         hh = self.table.horizontalHeader()
-        for i in range(len(headers)):
-            hh.setSectionResizeMode(i, QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(len(headers) - 1, QHeaderView.Stretch)
+        hh.setStretchLastSection(True)
+        for i in range(count):
+            hh.setSectionResizeMode(i, QHeaderView.Interactive)
+        self.table.resizeColumnsToContents()
+        for i in range(count - 1):
+            w = self.table.columnWidth(i)
+            self.table.setColumnWidth(i, max(60, min(w + 12, 520)))
+
+    def pending_value(self, path):
+        """Value staged for path but not yet written (editing window overrides this)."""
+        return None
 
     def show_grid(self, node, rows):
         cols = node["grid_columns"]
@@ -494,12 +525,15 @@ class MainWindow(QMainWindow):
             vals = n.get("values") or [n.get("value")] * cols
             for c in range(cols):
                 v = vals[c] if c < len(vals) else None
-                self.table.setItem(r, c + 1, self._item(fmt_value(n, v),
-                                                        None if used[c] else MUTED_FG))
+                pend = self.pending_value(f"{n.get('path_index')}[{c}]")
+                if pend is not None:
+                    cell = self._item(fmt_value(n, pend) + " *", PENDING_FG, bold=True,
+                                      tip=f"Staged, not yet written: {pend!r}\nLast read from radio: {v!r}")
+                else:
+                    cell = self._item(fmt_value(n, v), None if used[c] else MUTED_FG)
+                self.table.setItem(r, c + 1, cell)
             self.table.item(r, 0).setData(NODE_ROLE, (n, False))
-        hh = self.table.horizontalHeader()
-        for i in range(cols + 1):
-            hh.setSectionResizeMode(i, QHeaderView.ResizeToContents)
+        self._size_columns(cols + 1)
 
     def on_table_double(self, row, _col):
         it = self.table.item(row, 0)

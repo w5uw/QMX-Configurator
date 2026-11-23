@@ -127,6 +127,24 @@ def parse_discovery(b: str):
         return None
 
 
+def value_range(node: dict):
+    """
+    Return (low, high) for a Number (3) or Byte (4) setting, else None.
+
+    The radio's discovery reply 'type|param|name' gives, for both types, the
+    number of digits the field holds (SSB > USB Audio > Gain reports '4|2|Gain').
+    So a 2-digit byte is 0-99 and a 1-digit byte is 0-9, not 0-255. A byte can
+    never exceed 255 however many digits are reported.
+    """
+    t, p = node.get("type"), node.get("param")
+    if t not in (3, 4) or not isinstance(p, int) or p < 1:
+        return None
+    hi = 10 ** p - 1
+    if t == 4:
+        hi = min(hi, 255)
+    return 0, hi
+
+
 def is_dangerous(name: str) -> bool:
     n = name.lower()
     return any(k in n for k in DANGER_KEYWORDS)

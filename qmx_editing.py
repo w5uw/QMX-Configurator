@@ -3,9 +3,12 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from PySide6.QtWidgets import QInputDialog, QMessageBox, QFileDialog
+from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFileDialog, QInputDialog,
+                               QLabel, QLineEdit, QMessageBox, QVBoxLayout)
 
-APP_VERSION = "0.2.3"
+import qmx_protocol as qp
+
+APP_VERSION = "0.2.4"
 
 # v0.2.1: settings inside System config -> CAT config that may be edited.
 # Names are compared after lower-casing and removing everything except a-z/0-9,
@@ -55,6 +58,56 @@ def make_window(Base):
             toolbar.addAction("Discard pending changes", self.discard_changes)
             self.setWindowTitle(f"QMX+ Configurator {APP_VERSION} — staged editing")
 
+        def pending_value(self, path):
+            p = self.pending.get(path) if path else None
+            return p["new"] if p else None
+
+        def edit_text(self, node, current):
+            """Wide single-line editor for Text settings (e.g. 50-character messages)."""
+            limit = node.get("param", 0)
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Stage edit")
+            lay = QVBoxLayout(dlg)
+            lay.addWidget(QLabel(node["path_names"].replace("|", "  >  ")))
+            edit = QLineEdit(current)
+            edit.setMaxLength(limit)
+            edit.setMinimumWidth(max(420, edit.fontMetrics().horizontalAdvance("W") * min(limit, 60)))
+            lay.addWidget(edit)
+            count = QLabel()
+            note = QLabel("The radio may store letters in upper case; read-back ignores "
+                          "upper/lower case for text settings.")
+            note.setWordWrap(True)
+            note.setStyleSheet("color:#7a7a7a")
+            def upd():
+                count.setText(f"{len(edit.text())} of {limit} characters")
+            edit.textChanged.connect(upd)
+            upd()
+            lay.addWidget(count)
+            lay.addWidget(note)
+            bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            bb.accepted.connect(dlg.accept)
+            bb.rejected.connect(dlg.reject)
+            lay.addWidget(bb)
+            ok = dlg.exec() == QDialog.Accepted
+            return edit.text(), ok
+
+        @staticmethod
+        def values_match(node, actual, expected):
+            """Read-back check. Text is compared ignoring case because the radio may
+            convert letters (a typed 'cq' reads back as 'CQ'); all else must be exact."""
+            if actual == expected:
+                return True
+            if node.get("type") == 2 and actual is not None:
+                return actual.casefold() == expected.casefold()
+            return False
+
+        def store_read_back(self, node, sub, actual):
+            """Put a verified read-back value into the in-memory snapshot so the table shows it."""
+            if sub is None:
+                node["value"] = actual
+            else:
+                node["values"][sub] = actual
+
         def load_snapshot(self, snap):
             self.pending.clear()
             self.live_snapshot = False
@@ -71,6 +124,7 @@ def make_window(Base):
 
         def discard_changes(self):
             self.pending.clear()
+            self.refresh_view()
             self.statusBar().showMessage("Pending edits discarded; nothing written.")
 
         def confirm_discard(self):
@@ -87,7 +141,6 @@ def make_window(Base):
                 super().open_snapshot()
 
         def locked(self, node):
-            import qmx_protocol as qp
             parts = node.get("path_names", "").split("|")
             if any(qp.is_dangerous(x) for x in parts):
                 return True
@@ -118,10 +171,13 @@ def make_window(Base):
             if t in (3, 4):
                 if not re.fullmatch(r"[0-9]+", value):
                     raise ValueError("Enter an unsigned whole number.")
-                if t == 3 and (limit < 1 or len(value) > limit):
-                    raise ValueError("Number exceeds the discovered digit limit.")
-                if t == 4 and int(value) > 255:
-                    raise ValueError("Byte values must be 0 through 255.")
+                rng = qp.value_range(node)
+                if rng is None:
+                    raise ValueError("The radio did not report a digit limit for this number.")
+                lo, hi = rng
+                if not lo <= int(value) <= hi or len(value) > limit:
+                    raise ValueError(f"Enter a whole number from {lo} to {hi} "
+                                     f"(this field holds {limit} digit{'s' if limit != 1 else ''}).")
                 if cat_config_item(node) == "timeouts":
                     lo, hi = CAT_TIMEOUT_SECONDS
                     if not lo <= int(value) <= hi:
@@ -173,8 +229,15 @@ def make_window(Base):
             if node["type"] == 5:
                 choices = self.lists[str(node["list_type"]) ]
                 value, ok = QInputDialog.getItem(self, "Stage edit", node["path_names"], choices, choices.index(current), False)
+            elif node["type"] == 2:
+                value, ok = self.edit_text(node, current)
             else:
-                value, ok = QInputDialog.getText(self, "Stage edit", node["path_names"], text=current)
+                rng = qp.value_range(node)
+                label = node["path_names"].replace("|", "  >  ")
+                if rng:
+                    label += f"\n\nAllowed: {rng[0]} to {rng[1]}"
+                value, ok = QInputDialog.getText(self, "Stage edit", label, text=current)
+                value = value.strip()
             if not ok:
                 return
             try:
@@ -188,7 +251,8 @@ def make_window(Base):
                 self.pending.pop(path, None)
             else:
                 self.pending[path] = dict(node=node, sub=sub, old=old, new=value)
-            self.statusBar().showMessage(f"{len(self.pending)} pending change(s). Radio unchanged until Apply.")
+            self.refresh_view()
+            self.statusBar().showMessage(f"{len(self.pending)} pending change(s), shown in orange. Radio unchanged until Apply.")
 
         def confirm_special(self, node, value):
             """Extra explanation/confirmation for CAT config items. Returns True to stage."""
@@ -262,6 +326,7 @@ def make_window(Base):
             if not filename:
                 return
             verified = []
+            ok_all = False
             try:
                 # Re-read all affected values before the first write, catching external changes.
                 for path, v in self.pending.items():
@@ -274,16 +339,30 @@ def make_window(Base):
                     if reply and reply.startswith("?"):
                         raise RuntimeError("Radio rejected write: " + path)
                     actual = self.get_value(path)
+                    if not self.values_match(v["node"], actual, v["new"]):
+                        self.store_read_back(v["node"], v["sub"], actual)
+                        hint = (" The radio may have limited the number to its own range."
+                                if v["node"].get("type") in (3, 4) else "")
+                        raise RuntimeError(f"Write unverified at {v['node']['path_names']} ({path}): "
+                                           f"read back {actual!r}, expected {v['new']!r}.{hint} No further writes sent.")
                     if actual != v["new"]:
-                        raise RuntimeError(f"Write unverified at {path}: read back {actual!r}, expected {v['new']!r}. No further writes sent.")
+                        self.log(f"NOTE {path}: radio stored {actual!r} for {v['new']!r} (case differs only); accepted.")
+                    self.store_read_back(v["node"], v["sub"], actual)
                     verified.append(path)
-                QMessageBox.information(self, "Writes verified", f"{len(verified)} setting(s) read back correctly.\n\nNo MU reload command was sent. If MM Effect is On demand, enter and exit the radio menu to activate the saved configuration.\n\nRead all settings again to refresh the display.")
+                ok_all = True
+                QMessageBox.information(self, "Writes verified", f"{len(verified)} setting(s) read back correctly. The table now shows the values read back from the radio.\n\nNo MU reload command was sent. If MM Effect is On demand, enter and exit the radio menu to activate the saved configuration.")
             except Exception as exc:
                 self.log("APPLY STOPPED: " + str(exc))
                 QMessageBox.warning(self, "Apply stopped", f"{exc}\n\n{len(verified)} preceding write(s) verified. The failed setting may already have changed. No automatic rollback. Read all settings before further edits.")
             finally:
                 self.pending.clear()
-                self.live_snapshot = False
+                # Every written value was read back, so the snapshot still matches the
+                # radio after a fully verified Apply; after a failure, require a re-read.
+                self.live_snapshot = ok_all
+                self.refresh_view()
+                self.statusBar().showMessage(
+                    f"Apply finished: {len(verified)} write(s) verified." if ok_all else
+                    f"Apply stopped after {len(verified)} verified write(s). Read all settings before further edits.")
 
         def closeEvent(self, event):
             if self.worker:
