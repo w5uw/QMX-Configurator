@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-QMX+ Configurator - version 0.2.4 (staged read/write editing)
+QMX+ Configurator - version 0.2.5 (staged read/write editing)
 
 Browse every QMX/QMX+ configuration setting without PuTTY.
 * Connect to the radio's USB COM port and read the full menu (CAT Menu Manager).
@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 import qmx_protocol as qp
 
 APP_NAME = "QMX+ Configurator"
-APP_VERSION = "0.2.4"
+APP_VERSION = "0.2.5"
 TESTED_FIRMWARE = "1_04_010"
 NODE_ROLE = Qt.UserRole + 1
 

@@ -17,3 +17,8 @@ Enjoy
   character counter.
 - Text read-back ignores upper/lower case, so typing "cq" and the radio storing
   "CQ" no longer stops the remaining writes.
+
+## Changes in v0.2.5
+
+- Number read-back is compared by value, so a setting the radio returns with
+  leading zeros (Virtual U3S > Set time reads "0020") no longer stops Apply.

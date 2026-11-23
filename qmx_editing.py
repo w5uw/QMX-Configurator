@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFileDialog, QInputDia
 
 import qmx_protocol as qp
 
-APP_VERSION = "0.2.4"
+APP_VERSION = "0.2.5"
 
 # v0.2.1: settings inside System config -> CAT config that may be edited.
 # Names are compared after lower-casing and removing everything except a-z/0-9,
@@ -94,11 +94,17 @@ def make_window(Base):
         @staticmethod
         def values_match(node, actual, expected):
             """Read-back check. Text is compared ignoring case because the radio may
-            convert letters (a typed 'cq' reads back as 'CQ'); all else must be exact."""
+            convert letters (a typed 'cq' reads back as 'CQ'); numbers are compared by
+            value so leading zeros don't matter; everything else must be exact."""
             if actual == expected:
                 return True
-            if node.get("type") == 2 and actual is not None:
+            if actual is None:
+                return False
+            if node.get("type") == 2:
                 return actual.casefold() == expected.casefold()
+            if node.get("type") in (3, 4) and actual.isdigit() and expected.isdigit():
+                # Leading zeros only: the radio returns e.g. Set time as '0020' for 20.
+                return int(actual) == int(expected)
             return False
 
         def store_read_back(self, node, sub, actual):
@@ -346,7 +352,7 @@ def make_window(Base):
                         raise RuntimeError(f"Write unverified at {v['node']['path_names']} ({path}): "
                                            f"read back {actual!r}, expected {v['new']!r}.{hint} No further writes sent.")
                     if actual != v["new"]:
-                        self.log(f"NOTE {path}: radio stored {actual!r} for {v['new']!r} (case differs only); accepted.")
+                        self.log(f"NOTE {path}: radio stored {actual!r} for {v['new']!r} (only letter case or leading zeros differ); accepted.")
                     self.store_read_back(v["node"], v["sub"], actual)
                     verified.append(path)
                 ok_all = True
