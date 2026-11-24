@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFileDialog, QInputDia
 
 import qmx_protocol as qp
 
-APP_VERSION = "0.2.6"
+APP_VERSION = "0.2.8"
 
 # v0.2.1: settings inside System config -> CAT config that may be edited.
 # Names are compared after lower-casing and removing everything except a-z/0-9,
@@ -17,6 +17,16 @@ APP_VERSION = "0.2.6"
 CAT_CONFIG_EDITABLE = {"kyts480", "ruandrd", "mmeffect", "timeout", "timeouts"}
 CAT_TIMEOUT_SECONDS = (10, 600)   # accepted range for CAT config -> Timeout (s)
 OFF_WORDS = {"disabled", "off", "no"}
+# v0.2.7: the radio refuses a Set with nothing after '=' (MMpath=; answers ?;),
+# so a cleared text setting (e.g. a message) is written as one space.
+BLANK_TEXT = " "
+
+
+def wire_value(node, value):
+    """Value actually sent to the radio for a staged edit."""
+    if node.get("type") == 2 and value.strip() == "":
+        return BLANK_TEXT
+    return value
 
 
 def _norm(name):
@@ -35,6 +45,72 @@ PROTECTION_EDITABLE = {
     "swrwarnstyle", "tune", "gpsprotection", "supplyvoltage",
     "minvoltage", "maxvoltage",
 }
+
+# v0.2.8: decimal (type 8) editing, only for the two PA voltage settings.
+# Format (confirmed by Hans Summers, groups.io QRPLabs #168400): the radio reads and
+# writes the real voltage with a decimal point, e.g. "6.00" or "11.5". If the
+# Display/controls thousands delimiter is "." on older firmware the point is dropped
+# on read ("11.5" reads "115"); such a value is refused so we never guess.
+# Over CAT the radio stores whatever it is sent (e.g. "120" = 120 V), so the app
+# enforces the range itself.
+PA_VOLTAGE_RANGE = (1.0, 12.0)        # volts; QRP Labs advises not above 12 V
+PA_VOLTAGE_DEFAULT_MAX = 11.5         # factory default of Protection > Max. PA voltage
+DECIMAL_RE = re.compile(r"[0-9]{1,2}(?:\.[0-9]{0,2})?")
+
+
+def pa_voltage_kind(node):
+    """'max' for Protection > Max. PA voltage, 'u3s' for Virtual U3S > PA Voltage, else None."""
+    if node.get("type") != 8:
+        return None
+    if protection_item(node) == "maxpavoltage":
+        return "max"
+    if in_virtual_u3s(node) and _norm(node.get("name")) == "pavoltage":
+        return "u3s"
+    return None
+
+
+def decimal_value(text):
+    """Volts as a float if text is a plain decimal with a point (e.g. '6.00'), else None."""
+    t = (text or "").strip()
+    if "." not in t or not DECIMAL_RE.fullmatch(t):
+        return None
+    return float(t)
+
+
+def format_voltage(volts, width):
+    """Format like the radio does: 'width' characters including the point,
+    e.g. width 4 gives 6.00, 9.99, 11.5."""
+    whole = len(str(int(volts)))
+    places = width - whole - 1
+    if places < 1:
+        raise ValueError(f"{volts} V does not fit this {width}-character field.")
+    return f"{volts:.{places}f}"
+
+
+def parse_voltage(node, value):
+    """Check a typed voltage and return it in the radio's format, or raise ValueError."""
+    # Field width: taken from the value the radio returned (e.g. "6.00" = 4), as the
+    # discovery length for this undocumented type has not been confirmed.
+    cur = node.get("value")
+    width = len(cur.strip()) if decimal_value(cur) is not None else node.get("param")
+    if not isinstance(width, int) or width < 3:
+        raise ValueError("The radio did not report a usable field length for this decimal setting.")
+    lo, hi = PA_VOLTAGE_RANGE
+    v = value.strip().rstrip("Vv").strip()
+    if not DECIMAL_RE.fullmatch(v):
+        raise ValueError(f"Enter a voltage such as 6.00 or 11.5 (from {lo:.2f} to {hi:.1f} V).")
+    volts = float(v)
+    if not lo <= volts <= hi:
+        raise ValueError(f"Enter a voltage from {lo:.2f} to {hi:.1f} V.")
+    text = format_voltage(volts, width)
+    if abs(float(text) - volts) > 1e-9:
+        places = len(text.split(".")[1])
+        down = f"{int(volts * 10 ** places) / 10 ** places:.{places}f}"
+        raise ValueError(f"{v} V has too many decimal places for this field; "
+                         f"the radio stores it as {width} characters, e.g. 6.00 or 11.5. "
+                         f"Try {down}.")
+    return text
+
 
 def is_clock(node):
     """'Set time' (Virtual U3S and System config) appears to be the radio's running
@@ -81,7 +157,9 @@ def make_window(Base):
             lay.addWidget(edit)
             count = QLabel()
             note = QLabel("The radio may store letters in upper case; read-back ignores "
-                          "upper/lower case for text settings.")
+                          "upper/lower case for text settings.\n"
+                          "To clear this setting, delete all the text: the radio won't accept "
+                          "an empty value, so a single space is written instead.")
             note.setWordWrap(True)
             note.setStyleSheet("color:#7a7a7a")
             def upd():
@@ -106,7 +184,12 @@ def make_window(Base):
                 return True
             if actual is None:
                 return False
+            if node.get("type") == 8:
+                a, e = decimal_value(actual), decimal_value(expected)
+                return a is not None and e is not None and abs(a - e) < 0.005
             if node.get("type") == 2:
+                if expected.strip() == "":
+                    return actual.strip() == ""      # cleared: a blank or a space both count
                 return actual.casefold() == expected.casefold()
             if is_clock(node) and actual.isdigit() and expected.isdigit() and len(actual) >= 4:
                 mins = lambda x: int(x[-4:-2]) * 60 + int(x[-2:])
@@ -162,6 +245,8 @@ def make_window(Base):
             # Explicit dangerous paths above remain locked.
             item = protection_item(node)
             if item is not None:
+                if pa_voltage_kind(node) == "max":
+                    return False
                 return item not in PROTECTION_EDITABLE
             if in_virtual_u3s(node):
                 return False
@@ -177,6 +262,14 @@ def make_window(Base):
 
         def validate(self, node, value):
             t, limit = node.get("type"), node.get("param", 0)
+            if t == 8:
+                if self.locked(node) or pa_voltage_kind(node) is None:
+                    raise ValueError("This setting is read-only in this version of the configurator. "
+                                     "Decimal editing is only enabled for Max. PA voltage and "
+                                     "Virtual U3S PA Voltage.")
+                if float(parse_voltage(node, value)) != float(value):
+                    raise ValueError("Internal check: voltage not in the radio's format.")
+                return
             if self.locked(node) or t not in (2, 3, 4, 5):
                 raise ValueError("This setting is locked or its field type is not supported for editing.")
             if any(ord(c) < 32 or ord(c) > 126 or c in ";=|?[]" for c in value):
@@ -243,6 +336,14 @@ def make_window(Base):
                 return
             path = node["path_index"] + (f"[{sub}]" if sub is not None else "")
             current = self.pending.get(path, {}).get("new", old)
+            if node.get("type") == 8 and pa_voltage_kind(node) and decimal_value(current) is None:
+                QMessageBox.information(
+                    self, "Locked",
+                    f"The radio returned {current!r} for {node['path_names'].replace('|', ' > ')}, "
+                    "without a decimal point, so the real voltage can't be known for sure.\n\n"
+                    "This happens when Display/controls > Thousands delimiter is set to \".\" "
+                    "on some firmware. Set it to \",\" on the radio, then Read all settings again.")
+                return
             try:
                 self.validate(node, current)
             except ValueError as exc:
@@ -260,10 +361,20 @@ def make_window(Base):
                     label += ("\n\nThis looks like the radio's running clock. Enter HHMM "
                               "(e.g. 1430); the radio's time will change when applied.")
                     current = ""
+                elif node["type"] == 8:
+                    lo, hi = PA_VOLTAGE_RANGE
+                    label += (f"\n\nVolts, from {lo:.2f} to {hi:.1f}, e.g. 6.00 or 11.5. "
+                              "Below 10 V up to two decimal places, 10 V and above one.")
                 elif rng:
                     label += f"\n\nAllowed: {rng[0]} to {rng[1]}"
                 value, ok = QInputDialog.getText(self, "Stage edit", label, text=current)
                 value = value.strip()
+                if ok and node["type"] == 8:
+                    try:
+                        value = parse_voltage(node, value)
+                    except ValueError as exc:
+                        QMessageBox.warning(self, "Invalid value", str(exc))
+                        return
             if not ok:
                 return
             try:
@@ -271,9 +382,13 @@ def make_window(Base):
             except ValueError as exc:
                 QMessageBox.warning(self, "Invalid value", str(exc))
                 return
-            if value != old and not self.confirm_special(node, value):
+            if value != old and not (node["type"] == 2 and value.strip() == "" == old.strip()) \
+                    and not self.confirm_special(node, value):
                 return
-            if value == old:
+            same = (value == old
+                    or (node["type"] == 8 and self.values_match(node, value, old))
+                    or (node["type"] == 2 and value.strip() == "" and old.strip() == ""))
+            if same:
                 self.pending.pop(path, None)
             else:
                 self.pending[path] = dict(node=node, sub=sub, old=old, new=value)
@@ -282,6 +397,34 @@ def make_window(Base):
 
         def confirm_special(self, node, value):
             """Extra explanation/confirmation for CAT config items. Returns True to stage."""
+            kind = pa_voltage_kind(node)
+            if kind:
+                volts = float(value)
+                lines = []
+                if kind == "max":
+                    lines.append("Max. PA voltage limits the voltage on the power amplifier "
+                                 "(PA) transistors. Lower values reduce output power and heat; "
+                                 f"the factory default is {PA_VOLTAGE_DEFAULT_MAX}.")
+                    if volts > PA_VOLTAGE_DEFAULT_MAX:
+                        lines.append(f"{value} V is above the {PA_VOLTAGE_DEFAULT_MAX} V default. "
+                                     "QRP Labs does not recommend more than 12 V.")
+                    if volts > 9.0:
+                        lines.append("On a radio built for 9 V, keep this at 9.0 or lower.")
+                else:
+                    lines.append("Virtual U3S PA Voltage sets the beacon's output power, as if "
+                                 "the radio were running from this supply voltage. "
+                                 "The default is 6.0.")
+                    mx = self._find_value("protection", "maxpavoltage")
+                    if mx is not None and decimal_value(mx) is not None and volts > decimal_value(mx):
+                        lines.append(f"This is higher than Max. PA voltage ({mx} V), which still "
+                                     "limits the PA.")
+                lines.append("The app only checks the range 1.00 to 12.0 V, not whether the "
+                             "value suits your hardware.")
+                return QMessageBox.warning(
+                    self, "Stage PA voltage change?",
+                    "\n\n".join(lines) + f"\n\nSetting: {node['path_names'].replace('|', ' > ')}"
+                    f"\nNew value: {value} V\n\nStage this change?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes
             if protection_item(node) is not None:
                 return QMessageBox.warning(
                     self, "Stage Protection setting?",
@@ -329,6 +472,18 @@ def make_window(Base):
                     "menu enter/exit on the radio.")
             return True
 
+        def _find_value(self, *names):
+            """Current value of the setting whose normalised path is 'names', or None."""
+            def walk(nodes):
+                for n in nodes:
+                    if [_norm(x) for x in n.get("path_names", "").split("|")] == list(names):
+                        return n.get("value")
+                    r = walk(n.get("children") or [])
+                    if r is not None:
+                        return r
+                return None
+            return walk((self.snapshot or {}).get("menu") or [])
+
         def get_value(self, path):
             reply = self.radio.query("MM" + path + ";")
             if not reply or not reply.startswith("MM") or not reply.endswith(";"):
@@ -339,7 +494,9 @@ def make_window(Base):
             if self.worker or not self.radio or not self.live_snapshot or not self.pending:
                 QMessageBox.information(self, "Apply", "Read the connected radio and stage at least one edit first.")
                 return
-            lines = [f"{v['node']['path_names']} ({k}): {v['old']!r} → {v['new']!r}" for k, v in self.pending.items()]
+            lines = [f"{v['node']['path_names']} ({k}): {v['old']!r} → {v['new']!r}"
+                     + (" (cleared; written as one space)" if wire_value(v['node'], v['new']) != v['new'] else "")
+                     for k, v in self.pending.items()]
             box = QMessageBox(self)
             box.setWindowTitle("Confirm configuration writes")
             box.setText(f"Write {len(lines)} change(s) to radio configuration memory?\n\nThe main table still shows the last read values. No automatic rollback is attempted. A failure can leave a partially changed configuration.\n\nChanges may take effect immediately, depending on MM Effect.")
@@ -348,9 +505,10 @@ def make_window(Base):
             box.setDefaultButton(QMessageBox.No)
             if box.exec() != QMessageBox.Yes:
                 return
-            filename, _ = QFileDialog.getSaveFileName(self, "Save pre-write backup (required)", "qmx_before_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".json", "JSON (*.json)")
+            filename, _ = QFileDialog.getSaveFileName(self, "Save pre-write backup (required)", self.file_path("qmx_before_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".json"), "JSON (*.json)")
             if not filename:
                 return
+            self.remember_dir(filename)
             verified = []
             ok_all = False
             stopped = False
@@ -367,9 +525,12 @@ def make_window(Base):
                                            f"({path}) was {v['old']!r}, now {now!r}. Nothing was written.")
                 Path(filename).write_text(json.dumps(self.snapshot, indent=2), encoding="utf-8")
                 for path, v in self.pending.items():
-                    reply = self.radio.write_setting(path, v["new"])
+                    sent = wire_value(v["node"], v["new"])
+                    reply = self.radio.write_setting(path, sent)
                     if reply and reply.startswith("?"):
-                        raise RuntimeError("Radio rejected write: " + path)
+                        raise RuntimeError(f"The radio refused the write to {v['node']['path_names']} "
+                                           f"({path}), value {sent!r}. Nothing was changed for this "
+                                           f"setting and no further writes were sent.")
                     actual = self.get_value(path)
                     if not self.values_match(v["node"], actual, v["new"]):
                         self.store_read_back(v["node"], v["sub"], actual)

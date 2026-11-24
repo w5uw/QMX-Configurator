@@ -7,6 +7,38 @@ Enjoy
 
 ## Release notes
 
+### v0.2.8 (2026-11-24)
+
+Decimal editing for the two PA voltage settings.
+
+- Protection > Max. PA voltage and Virtual U3S > PA Voltage can now be edited.
+  Enter volts from 1.00 to 12.0, for example 6.00 or 11.5. Below 10 V the radio
+  holds two decimal places, 10 V and above one; anything else is refused.
+- The app checks the range itself because the radio stores whatever it is sent
+  over CAT (a typed "120" would be 120 V).
+- Each change asks for confirmation, with a warning above the 11.5 V factory
+  default, above 9 V for 9 V-built radios, and when the U3S PA Voltage is
+  higher than Max. PA voltage.
+- Read-back compares the voltage by value, so 6.0 and 6.00 match.
+- If the radio returns a voltage without a decimal point (Display/controls >
+  Thousands delimiter set to "." on some firmware), editing is locked with an
+  explanation, because the real value can't be known.
+- Other decimal settings (for example TCXO Cal Error) stay read-only.
+
+### v0.2.7 (2026-11-24)
+
+Bug fixes reported by Stan KC7XE.
+
+- Open and Save dialogs (snapshot and the pre-write backup) now start in the
+  QMX_Configurator program folder instead of C:\Windows\System32, and after
+  that in the last folder you used. The folder is remembered between runs.
+- Messages and other text settings can be cleared. The radio refuses an empty
+  value, so deleting all the text now writes a single space, and read-back
+  accepts a blank or a space. Previously Apply stopped with "Radio rejected
+  write: 5|6".
+- When the radio refuses a write, the message now names the setting and the
+  value sent, not just its menu number (5|6 means menu 5, item 6).
+
 ### v0.2.6 (2026-11-23)
 
 Release covering v0.2.4 to v0.2.6. Tested on a QMX+ with firmware 1_04_010.
@@ -26,8 +58,8 @@ Upgrading: copy the new .py files over your QMX_Configurator folder (keep a
 backup of the old folder). Your saved snapshots still open. Requirements are
 unchanged (see requirements.txt).
 
-Still read-only: PA Voltage and Max. PA voltage (decimal format not yet
-supported), calibration, mask fields, actions, and the Delimiter and GPS NMEA
+Still read-only (as of v0.2.6; see v0.2.8 for PA voltages): PA Voltage and
+Max. PA voltage (decimal format not yet supported), calibration, mask fields, actions, and the Delimiter and GPS NMEA
 lists. Number limits come from each field's digit count, not from what is
 electrically safe for your hardware.
 
