@@ -6,7 +6,7 @@ No GUI code lives here so it can be tested on its own.
 Menu data types (QRP Labs CAT manual, plus one observed on firmware 1.04.010):
     0 Sub-menu   1 Application/action   2 String   3 Number   4 Byte (0-255)
     5 List       6 Info                 7 Mask (boolean bit)
-    8 Decimal (undocumented; e.g. PA voltage '6.00'; param = field length)
+    8 Decimal (undocumented; real value with a point, e.g. PA voltage '6.00' or '11.5')
 """
 
 from __future__ import annotations

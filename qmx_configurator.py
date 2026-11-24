@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-QMX+ Configurator - version 0.2.7 (staged read/write editing)
+QMX+ Configurator - version 0.2.8 (staged read/write editing)
 
 Browse every QMX/QMX+ configuration setting without PuTTY.
 * Connect to the radio's USB COM port and read the full menu (CAT Menu Manager).
@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 import qmx_protocol as qp
 
 APP_NAME = "QMX+ Configurator"
-APP_VERSION = "0.2.7"
+APP_VERSION = "0.2.8"
 TESTED_FIRMWARE = "1_04_010"
 NODE_ROLE = Qt.UserRole + 1
 # v0.2.7: folder the program files are in. File dialogs start here (or in the
@@ -97,7 +97,7 @@ def leaf_details(node: dict, lists: dict, inferred: dict | None = None) -> str:
     if t == 6:
         return "Information only"
     if t == 8:
-        return f"Decimal number, up to {p} characters (type 8, not in QRP Labs manual)"
+        return f"Decimal number, {p} characters (e.g. 6.00 or 11.5)"
     if t == 1:
         return "Action; run from the radio menu only"
     return ""

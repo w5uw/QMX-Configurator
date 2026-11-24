@@ -7,6 +7,24 @@ Enjoy
 
 ## Release notes
 
+### v0.2.8 (2026-11-24)
+
+Decimal editing for the two PA voltage settings.
+
+- Protection > Max. PA voltage and Virtual U3S > PA Voltage can now be edited.
+  Enter volts from 1.00 to 12.0, for example 6.00 or 11.5. Below 10 V the radio
+  holds two decimal places, 10 V and above one; anything else is refused.
+- The app checks the range itself because the radio stores whatever it is sent
+  over CAT (a typed "120" would be 120 V).
+- Each change asks for confirmation, with a warning above the 11.5 V factory
+  default, above 9 V for 9 V-built radios, and when the U3S PA Voltage is
+  higher than Max. PA voltage.
+- Read-back compares the voltage by value, so 6.0 and 6.00 match.
+- If the radio returns a voltage without a decimal point (Display/controls >
+  Thousands delimiter set to "." on some firmware), editing is locked with an
+  explanation, because the real value can't be known.
+- Other decimal settings (for example TCXO Cal Error) stay read-only.
+
 ### v0.2.7 (2026-11-24)
 
 Bug fixes reported by Stan KC7XE.
@@ -40,8 +58,8 @@ Upgrading: copy the new .py files over your QMX_Configurator folder (keep a
 backup of the old folder). Your saved snapshots still open. Requirements are
 unchanged (see requirements.txt).
 
-Still read-only: PA Voltage and Max. PA voltage (decimal format not yet
-supported), calibration, mask fields, actions, and the Delimiter and GPS NMEA
+Still read-only (as of v0.2.6; see v0.2.8 for PA voltages): PA Voltage and
+Max. PA voltage (decimal format not yet supported), calibration, mask fields, actions, and the Delimiter and GPS NMEA
 lists. Number limits come from each field's digit count, not from what is
 electrically safe for your hardware.
 
