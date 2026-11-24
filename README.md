@@ -7,6 +7,20 @@ Enjoy
 
 ## Release notes
 
+### v0.2.7 (2026-11-24)
+
+Bug fixes reported by Stan KC7XE.
+
+- Open and Save dialogs (snapshot and the pre-write backup) now start in the
+  QMX_Configurator program folder instead of C:\Windows\System32, and after
+  that in the last folder you used. The folder is remembered between runs.
+- Messages and other text settings can be cleared. The radio refuses an empty
+  value, so deleting all the text now writes a single space, and read-back
+  accepts a blank or a space. Previously Apply stopped with "Radio rejected
+  write: 5|6".
+- When the radio refuses a write, the message now names the setting and the
+  value sent, not just its menu number (5|6 means menu 5, item 6).
+
 ### v0.2.6 (2026-11-23)
 
 Release covering v0.2.4 to v0.2.6. Tested on a QMX+ with firmware 1_04_010.

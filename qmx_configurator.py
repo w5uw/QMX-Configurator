@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-QMX+ Configurator - version 0.2.6 (staged read/write editing)
+QMX+ Configurator - version 0.2.7 (staged read/write editing)
 
 Browse every QMX/QMX+ configuration setting without PuTTY.
 * Connect to the radio's USB COM port and read the full menu (CAT Menu Manager).
@@ -20,7 +20,7 @@ import json
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QSettings, Qt, QThread, Signal
 from PySide6.QtGui import QAction, QBrush, QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDockWidget, QFileDialog,
@@ -32,9 +32,13 @@ from PySide6.QtWidgets import (
 import qmx_protocol as qp
 
 APP_NAME = "QMX+ Configurator"
-APP_VERSION = "0.2.6"
+APP_VERSION = "0.2.7"
 TESTED_FIRMWARE = "1_04_010"
 NODE_ROLE = Qt.UserRole + 1
+# v0.2.7: folder the program files are in. File dialogs start here (or in the
+# last folder used) instead of the Windows working folder, which is often
+# C:\Windows\System32 when started from a shortcut.
+APP_DIR = Path(__file__).resolve().parent
 
 DANGER_FG = QColor("#b3261e")
 MUTED_FG = QColor("#7a7a7a")
@@ -338,11 +342,28 @@ class MainWindow(QMainWindow):
         self._update_controls()
 
     # ---------------------------------------------------------------- snapshots
+    def file_dir(self) -> Path:
+        """Folder for Open/Save dialogs: the last folder used, else the program folder."""
+        last = QSettings().value("last_dir", "")
+        if last and Path(last).is_dir():
+            return Path(last)
+        return APP_DIR
+
+    def file_path(self, name: str) -> str:
+        """Full default path for a save dialog, in file_dir()."""
+        return str(self.file_dir() / name)
+
+    def remember_dir(self, path: str):
+        """Remember the folder of a file the user just opened or saved."""
+        if path:
+            QSettings().setValue("last_dir", str(Path(path).resolve().parent))
+
     def open_snapshot(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open snapshot", "",
+        path, _ = QFileDialog.getOpenFileName(self, "Open snapshot", str(self.file_dir()),
                                               "QMX snapshot (*.json);;All files (*)")
         if not path:
             return
+        self.remember_dir(path)
         try:
             snap = json.loads(Path(path).read_text(encoding="utf-8"))
             if "menu" not in snap:
@@ -359,9 +380,10 @@ class MainWindow(QMainWindow):
         fw = (self.snapshot.get("firmware") or "unknown").replace("/", "_")
         stamp = (self.snapshot.get("generated") or "").replace(":", "").replace("-", "")
         default = f"qmx_snapshot_{fw}_{stamp}.json"
-        path, _ = QFileDialog.getSaveFileName(self, "Save snapshot", default,
+        path, _ = QFileDialog.getSaveFileName(self, "Save snapshot", self.file_path(default),
                                               "QMX snapshot (*.json)")
         if path:
+            self.remember_dir(path)
             Path(path).write_text(json.dumps(self.snapshot, indent=2), encoding="utf-8")
             self.statusBar().showMessage(f"Saved {Path(path).name}", 8000)
 
@@ -610,6 +632,7 @@ MainWindow = make_window(MainWindow)
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setOrganizationName("W5UW")          # QSettings location (remembers the last folder)
     app.setApplicationName(APP_NAME)
     w = MainWindow()
     if len(sys.argv) > 1 and sys.argv[1].lower().endswith(".json"):

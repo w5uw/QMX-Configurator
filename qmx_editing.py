@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFileDialog, QInputDia
 
 import qmx_protocol as qp
 
-APP_VERSION = "0.2.6"
+APP_VERSION = "0.2.7"
 
 # v0.2.1: settings inside System config -> CAT config that may be edited.
 # Names are compared after lower-casing and removing everything except a-z/0-9,
@@ -17,6 +17,16 @@ APP_VERSION = "0.2.6"
 CAT_CONFIG_EDITABLE = {"kyts480", "ruandrd", "mmeffect", "timeout", "timeouts"}
 CAT_TIMEOUT_SECONDS = (10, 600)   # accepted range for CAT config -> Timeout (s)
 OFF_WORDS = {"disabled", "off", "no"}
+# v0.2.7: the radio refuses a Set with nothing after '=' (MMpath=; answers ?;),
+# so a cleared text setting (e.g. a message) is written as one space.
+BLANK_TEXT = " "
+
+
+def wire_value(node, value):
+    """Value actually sent to the radio for a staged edit."""
+    if node.get("type") == 2 and value.strip() == "":
+        return BLANK_TEXT
+    return value
 
 
 def _norm(name):
@@ -81,7 +91,9 @@ def make_window(Base):
             lay.addWidget(edit)
             count = QLabel()
             note = QLabel("The radio may store letters in upper case; read-back ignores "
-                          "upper/lower case for text settings.")
+                          "upper/lower case for text settings.\n"
+                          "To clear this setting, delete all the text: the radio won't accept "
+                          "an empty value, so a single space is written instead.")
             note.setWordWrap(True)
             note.setStyleSheet("color:#7a7a7a")
             def upd():
@@ -107,6 +119,8 @@ def make_window(Base):
             if actual is None:
                 return False
             if node.get("type") == 2:
+                if expected.strip() == "":
+                    return actual.strip() == ""      # cleared: a blank or a space both count
                 return actual.casefold() == expected.casefold()
             if is_clock(node) and actual.isdigit() and expected.isdigit() and len(actual) >= 4:
                 mins = lambda x: int(x[-4:-2]) * 60 + int(x[-2:])
@@ -271,9 +285,11 @@ def make_window(Base):
             except ValueError as exc:
                 QMessageBox.warning(self, "Invalid value", str(exc))
                 return
-            if value != old and not self.confirm_special(node, value):
+            if value != old and not (node["type"] == 2 and value.strip() == "" == old.strip()) \
+                    and not self.confirm_special(node, value):
                 return
-            if value == old:
+            same = value == old or (node["type"] == 2 and value.strip() == "" and old.strip() == "")
+            if same:
                 self.pending.pop(path, None)
             else:
                 self.pending[path] = dict(node=node, sub=sub, old=old, new=value)
@@ -339,7 +355,9 @@ def make_window(Base):
             if self.worker or not self.radio or not self.live_snapshot or not self.pending:
                 QMessageBox.information(self, "Apply", "Read the connected radio and stage at least one edit first.")
                 return
-            lines = [f"{v['node']['path_names']} ({k}): {v['old']!r} → {v['new']!r}" for k, v in self.pending.items()]
+            lines = [f"{v['node']['path_names']} ({k}): {v['old']!r} → {v['new']!r}"
+                     + (" (cleared; written as one space)" if wire_value(v['node'], v['new']) != v['new'] else "")
+                     for k, v in self.pending.items()]
             box = QMessageBox(self)
             box.setWindowTitle("Confirm configuration writes")
             box.setText(f"Write {len(lines)} change(s) to radio configuration memory?\n\nThe main table still shows the last read values. No automatic rollback is attempted. A failure can leave a partially changed configuration.\n\nChanges may take effect immediately, depending on MM Effect.")
@@ -348,9 +366,10 @@ def make_window(Base):
             box.setDefaultButton(QMessageBox.No)
             if box.exec() != QMessageBox.Yes:
                 return
-            filename, _ = QFileDialog.getSaveFileName(self, "Save pre-write backup (required)", "qmx_before_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".json", "JSON (*.json)")
+            filename, _ = QFileDialog.getSaveFileName(self, "Save pre-write backup (required)", self.file_path("qmx_before_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".json"), "JSON (*.json)")
             if not filename:
                 return
+            self.remember_dir(filename)
             verified = []
             ok_all = False
             stopped = False
@@ -367,9 +386,12 @@ def make_window(Base):
                                            f"({path}) was {v['old']!r}, now {now!r}. Nothing was written.")
                 Path(filename).write_text(json.dumps(self.snapshot, indent=2), encoding="utf-8")
                 for path, v in self.pending.items():
-                    reply = self.radio.write_setting(path, v["new"])
+                    sent = wire_value(v["node"], v["new"])
+                    reply = self.radio.write_setting(path, sent)
                     if reply and reply.startswith("?"):
-                        raise RuntimeError("Radio rejected write: " + path)
+                        raise RuntimeError(f"The radio refused the write to {v['node']['path_names']} "
+                                           f"({path}), value {sent!r}. Nothing was changed for this "
+                                           f"setting and no further writes were sent.")
                     actual = self.get_value(path)
                     if not self.values_match(v["node"], actual, v["new"]):
                         self.store_read_back(v["node"], v["sub"], actual)
