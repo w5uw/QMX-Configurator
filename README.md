@@ -9,6 +9,8 @@ Enjoy
 
 ### v0.2.8 (2026-11-24)
 
+Tested on a QMX+ with firmware 1_04_010, together with the v0.2.7 fixes.
+
 Decimal editing for the two PA voltage settings.
 
 - Protection > Max. PA voltage and Virtual U3S > PA Voltage can now be edited.
@@ -27,7 +29,7 @@ Decimal editing for the two PA voltage settings.
 
 ### v0.2.7 (2026-11-24)
 
-Bug fixes reported by Stan KC7XE.
+Bug fixes reported by Stan KC7XE. Tested on a QMX+ with firmware 1_04_010.
 
 - Open and Save dialogs (snapshot and the pre-write backup) now start in the
   QMX_Configurator program folder instead of C:\Windows\System32, and after
